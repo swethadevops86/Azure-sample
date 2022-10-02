@@ -1,0 +1,291 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- selenium
+
+pool:
+  vmImage: ubuntu-latest
+resources:
+- repo: self
+  clean: false
+stages:
+- stage: Build
+  displayName: Build Docker Images
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool: $(AGENT_POOL_NAME)
+    steps:
+    - task: CmdLine@2
+      displayName: Create .env file
+      inputs:
+        script: if not exist .env (ren .env.k8s .env)
+
+    - task: DockerCompose@0
+      displayName: "Build Images"
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscriptionEndpoint: $(AZURE_SUBSCRIPTION)
+        azureContainerRegistry: '$(AZURE_CONTAINER_REGISTRY)'
+        dockerComposeFile: 'docker-compose.yml'
+        additionalDockerComposeFiles: 'docker-compose.override.yml'
+        dockerComposeFileArgs: |
+          REGISTRY=$(REGISTRY)
+          BUILD_CONFIGURATION=$(DEV_BUILD_CONFIGURATION)
+          CD_HOST=$(DEV_CD_HOST)
+          CM_HOST=$(DEV_CM_HOST)
+          COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME)
+          HORIZON_ASSET_VERSION=$(HORIZON_ASSET_VERSION)
+          HORIZON_VERSION=$(HORIZON_VERSION)
+          HRZ_HOST=$(DEV_HRZ_HOST)
+          HTTPS_PORT=$(HTTPS_PORT)
+          ID_HOST=$(DEV_ID_HOST)
+          ISOLATION=$(ISOLATION)
+          LOCAL_DATA_PATH=$(LOCAL_DATA_PATH)
+          LOCAL_DEPLOY_PATH=$(LOCAL_DEPLOY_PATH)
+          MEDIA_REQUEST_PROTECTION_SHARED_SECRET=$(MEDIA_REQUEST_PROTECTION_SHARED_SECRET)
+          MSSQL_PORT=$(MSSQL_PORT)
+          REPORTING_API_KEY=$(REPORTING_API_KEY)
+          SITECORE_ADMIN_PASSWORD=$(SITECORE_ADMIN_PASSWORD)
+          SITECORE_DOCKER_REGISTRY=$(SITECORE_DOCKER_REGISTRY)
+          SITECORE_ID_CERTIFICATE=$(SITECORE_ID_CERTIFICATE)
+          SITECORE_ID_CERTIFICATE_PASSWORD=$(SITECORE_ID_CERTIFICATE_PASSWORD)
+          SITECORE_IDSECRET=$(SITECORE_CLI_IDSECRET)
+          SITECORE_LICENSE=$(SITECORE_LICENSE)
+          SITECORE_MODULE_REGISTRY=$(SITECORE_MODULE_REGISTRY)
+          SITECORE_TOOLS_REGISTRY=$(SITECORE_TOOLS_REGISTRY)
+          SITECORE_VERSION=$(SITECORE_VERSION)
+          SOLR_CORE_PREFIX_NAME=$(SOLR_CORE_PREFIX_NAME)
+          SOLR_PORT=$(SOLR_PORT)
+          SOLUTION_BASE_IMAGE=$(SOLUTION_BASE_IMAGE)
+          SOLUTION_BUILD_IMAGE=$(SOLUTION_BUILD_IMAGE)
+          SPE_VERSION=$(SPE_VERSION)
+          SQL_SA_LOGIN=$(SQL_SA_LOGIN)
+          SQL_SA_PASSWORD=$(SQL_SA_PASSWORD)
+          SQL_SERVER=$(DEV_SQL_SERVER)
+          SXA_VERSION=$(SXA_VERSION)
+          SPS_VERSION=$(SPS_VERSION)
+          SMS_VERSION=$(SMS_VERSION)
+          TELERIK_ENCRYPTION_KEY=$(TELERIK_ENCRYPTION_KEY)
+          TOOLS_VERSION=$(TOOLS_VERSION)
+          TRAEFIK_IMAGE=$(TRAEFIK_IMAGE)
+          TRAEFIK_ISOLATION=$(TRAEFIK_ISOLATION)
+          TRAEFIK_MANAGEMENT_PORT=$(TRAEFIK_MANAGEMENT_PORT)
+          XCONNECT_PORT=$(XCONNECT_PORT)
+          MONGO_INIT_USER=$(MONGO_INIT_USER)
+          MONGO_INIT_PASS=$(MONGO_INIT_PASS)
+          SCCH_VERSION=$(SCCH_VERSION)
+          MONGO_VERSION=$(MONGO_VERSION)
+          CMP_ServiceBusEntityPathIn=$(CMP_ServiceBusEntityPathIn)
+          CMP_ServiceBusSubscription=$(CMP_ServiceBusSubscription)
+          CMP_ServiceBusEntityPathOut=$(CMP_ServiceBusEntityPathOut)
+          DAM_ContentHub=$(DAM_ContentHub)
+          DAM_SearchPage=$(DAM_SearchPage)
+          DAM_ExternalRedirectKey=$(DAM_ExternalRedirectKey)
+          CMP_ContentHub=$(CMP_ContentHub)
+          MTH_LeadApiBaseUrl=$(Sitecore_MTH_LeadApiBaseUrl)
+          MTH_SubscriptionKey=$(Sitecore_MTH_SubscriptionKey)
+          ENV=Dev
+        qualifyImageNames: false
+        action: 'Build services'
+        additionalImageTags: '$(Build.BuildNumber)-$(Build.SourceBranchName)'
+        includeLatestTag: false
+        projectName: ''
+    - task: DockerCompose@0
+      displayName: "Push Images to ACR"
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscriptionEndpoint: $(AZURE_SUBSCRIPTION)
+        azureContainerRegistry: '$(AZURE_CONTAINER_REGISTRY)'
+        dockerComposeFile: 'docker-compose.yml'
+        additionalDockerComposeFiles: 'docker-compose.override.yml'
+        action: 'Push services'
+        additionalImageTags: '$(Build.BuildNumber)-$(Build.SourceBranchName)'
+        includeLatestTag: false
+        projectName: ''
+#      condition: or(and(succeeded(), startsWith(variables['branchName'], 'refs/heads/develop')), and(succeeded(), startsWith(variables['branchName'], 'refs/heads/release'))) 
+#      condition:  and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+
+    - task: CopyFiles@2
+      displayName: "Copy K8s files to staging directory"
+      inputs:
+        SourceFolder: 'k8s/specs'
+        Contents: '**'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/k8s-specs'
+        CleanTargetFolder: true
+    - task: CopyFiles@2
+      displayName: "Copy Serialization assets to staging directory"
+      inputs:
+        SourceFolder: './'
+        Contents: |
+          sitecore.json
+          src/**/*.module.json
+          src/**/items/**
+          .config/dotnet-tools.json
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/serialization'
+        CleanTargetFolder: true
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: '$(System.ArtifactsDirectory)'
+        artifact: 'meritage-homes-$(Build.BuildNumber)'
+- stage: Dev
+  condition:  and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  dependsOn: Build
+  displayName: Deploy to Dev
+  jobs:
+  - deployment: 'Deploy_Specs_to_Dev_AKS'
+    pool: $(AGENT_POOL_NAME)
+    environment: Development
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download Build Artifact"
+            inputs:
+              artifact: meritage-homes-$(Build.BuildNumber)
+              targetPath: '$(System.ArtifactsDirectory)'
+          - task: Kubernetes@1
+            displayName: Create Dev Namespace
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: '$(AKS_SERVICE_ENDPOINT)'
+              command: 'apply'
+              useConfigurationFile: true
+              configuration: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1/namespaces/namespace-dev.yaml'
+              secretType: 'dockerRegistry'
+              containerRegistryType: 'Azure Container Registry'
+              versionSpec: '1.23.8'
+              outputFormat: none
+          - task: replacetokens@3
+            displayName: "Replace Tokens in Secrets & Specs"
+            inputs:
+              rootDirectory: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1'
+              targetFiles: |
+                **/*.txt
+                **/*.crt
+                **/*.key
+                **/*.yaml
+              encoding: 'auto'
+              writeBOM: true
+              actionOnMissing: 'warn'
+              keepToken: true
+              tokenPrefix: '$('
+              tokenSuffix: ')'
+              useLegacyPattern: false
+              enableTelemetry: false
+          - task: KubernetesManifest@0
+            displayName: Bake Secrets
+            name: 'bake_secrets'
+            inputs:
+              action: 'bake'
+              renderType: 'kustomize'
+              kustomizationPath: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1/secrets/'
+          - task: KubernetesManifest@0
+            displayName: Deploy Secrets
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: '$(AKS_SERVICE_ENDPOINT)'
+              namespace: 'mthdev'
+              manifests: '$(bake_secrets.manifestsBundle)'
+          - task: KubernetesManifest@0
+            displayName: Bake Ingress Specifications
+            name: 'bake_ingress'
+            inputs:
+              action: 'bake'
+              renderType: 'kustomize'
+              kustomizationPath: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1/ingress-nginx/'
+          - task: KubernetesManifest@0
+            displayName: Deploy Ingress Specifications
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: '$(AKS_SERVICE_ENDPOINT)'
+              namespace: 'mthdev'
+              manifests: '$(bake_ingress.manifestsBundle)'
+          - task: KubernetesManifest@0
+            displayName: Bake External Specifications
+            name: 'bake_external'
+            inputs:
+              action: 'bake'
+              renderType: 'kustomize'
+              kustomizationPath: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1/external/'
+          - task: KubernetesManifest@0
+            displayName: Deploy External Specifications
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: '$(AKS_SERVICE_ENDPOINT)'
+              namespace: 'mthdev'
+              manifests: '$(bake_external.manifestsBundle)'
+          - task: KubernetesManifest@0
+            displayName: Bake SPS Specifications
+            name: 'bake_sps'
+            inputs:
+              action: 'bake'
+              renderType: 'kustomize'
+              kustomizationPath: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1/sps/'
+          - task: KubernetesManifest@0
+            displayName: Deploy SPS Specifications
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: '$(AKS_SERVICE_ENDPOINT)'
+              namespace: 'mthdev'
+              manifests: '$(bake_sps.manifestsBundle)'
+          - task: KubernetesManifest@0
+            displayName: Bake Application Specifications
+            name: 'bake_application'
+            inputs:
+              action: 'bake'
+              renderType: 'kustomize'
+              kustomizationPath: '$(System.ArtifactsDirectory)/k8s-specs/dev/xm1'
+          - task: KubernetesManifest@0
+            displayName: Deploy Application Specifications
+            inputs:
+              action: 'deploy'
+              kubernetesServiceConnection: '$(AKS_SERVICE_ENDPOINT)'
+              namespace: 'mthdev'
+              manifests: '$(bake_application.manifestsBundle)'
+              rolloutStatusTimeout: '193600'
+  - deployment: 'Deserialize_Content_to_Dev'
+    dependsOn: 'Deploy_Specs_to_Dev_AKS'
+    pool: $(AGENT_POOL_NAME)
+    environment: Development
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download Build Artifact"
+            inputs:
+              artifact: meritage-homes-$(Build.BuildNumber)
+              targetPath: '$(System.ArtifactsDirectory)'
+
+          - task: UseDotNet@2
+            inputs:
+              version: '6.0.x'
+              includePreviewVersions: true
+          - task: PowerShell@2
+            displayName: Deserialize Content
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Add nuget source & install Sitecore CLI
+                Write-Host "Installing Sitecore CLI"
+                dotnet nuget add source $(SITECORE_PUBLIC_NUGET_FEED) --name "Sitecore-Public-Nuget-Feed"
+                dotnet tool restore
+                
+                # Login to ID Server
+                Write-Host "Logging into ID Server"
+                dotnet sitecore login --client-credentials true --auth $(DEV_FULL_ID_HOST) --cm $(DEV_FULL_CM_HOST) --allow-write true --client-id "PipelineClient" --client-secret "placeholder"
+                
+                # Deserialize Content
+                Write-Host "Push Content"
+                dotnet sitecore ser push
+                
+                # Publish Database
+                Write-Host "Publish Database"
+                dotnet sitecore publish
+              workingDirectory: '$(System.ArtifactsDirectory)/serialization'
+
